@@ -1,37 +1,40 @@
-// No dependencies. Run with: node --test
-const { test } = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const game = vm.runInNewContext(['story.js','engine.js'].map(file=>fs.readFileSync(path.join(__dirname,'..',file),'utf8')).join('\n')+'\n;({scenes,places,fresh,restore,decide,visibleChoices,fightTurn,rewind,clone})');
-const {scenes,places,fresh,restore,decide,visibleChoices,fightTurn,rewind,clone} = game;
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const vm=require('node:vm');
+const root=path.join(__dirname,'..');
+const {scenes,places,fresh,restore,decide,visibleChoices,fightTurn,rewind,clone}=vm.runInNewContext(['story.js','engine.js'].map(file=>fs.readFileSync(path.join(root,file),'utf8')).join('\n')+'\n;({scenes,places,fresh,restore,decide,visibleChoices,fightTurn,rewind,clone})');
+const words=s=>(s.text.join(' ').match(/[А-Яа-яЁё]+(?:[-‑][А-Яа-яЁё]+)*/g)||[]).length;
 
-test('Original saves resume with their discovered clues',()=>{
- for(const [i,clue] of [[0,'paper'],[1,'tag']]){
-  const p=restore({scene:'end',log:[scenes.letter.choices[i][2]]});
-  assert.equal(p.path,'mortal');assert.equal(p.flags[clue],true);decide(p,0);
-  assert.equal(visibleChoices(p).length,2);
+test('Every leaf has substantial original prose, a timestamp and a location illustration',()=>{
+ for(const s of Object.values(scenes)){
+  assert(words(s)>=175, s.title);assert(s.text.length>=3,s.title);assert.match(s.time,/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+  assert(fs.existsSync(path.join(root,'assets',places[s.place][1]+'.jpg')));
  }
 });
 
-test('Every scene can be reached legally and every active route has a way forward',()=>{
- const visited=new Set();
- function walk(p,depth){
-  assert(depth<30);const s=scenes[p.scene];assert(s);assert(places[s.place]);visited.add(p.scene);
-  if(['press','edition','machine','guard','released'].includes(p.scene))assert.equal(p.path,'human');
-  if(['mirror','file','roll','hound','threshold'].includes(p.scene))assert.equal(p.path,'vampire');
-  if(s.final){if(s.dead){const back=rewind(p);assert(!scenes[back.scene].final);assert.equal(back.path,p.path)}return}
+test('Every branch plays in order, remains human, and reaches a full-length conclusion',t=>{
+ const reached=new Set(),lengths=[];
+ function walk(p,count=0){
+  const s=scenes[p.scene];assert(s);reached.add(p.scene);assert.equal(p.path,'mortal');count+=words(s);
+  if(s.final){if(!s.dead)lengths.push(count);else assert(!scenes[rewind(p).scene].dead);return}
   if(s.fight){
-   const lost=clone(p); for(let n=0;lost.combat&&n<6;n++)fightTurn(lost,'attack');
-   assert.equal(lost.scene,'fallen');walk(lost,depth+1);
+   const lost=clone(p);for(let i=0;i<6&&lost.combat;i++)fightTurn(lost,'attack');assert.equal(lost.scene,'fallen');walk(lost,count);
    const retry=rewind(lost);assert.deepEqual(retry.combat,p.combat);assert.deepEqual(retry.log,p.log);
-   fightTurn(p,'guard');fightTurn(p,'attack');fightTurn(p,'skill');
-   if(p.combat){const snapshot=JSON.stringify(p);fightTurn(p,'skill');assert.equal(JSON.stringify(p),snapshot);fightTurn(p,'attack')}
-   assert.equal(p.scene,s.fight.win);walk(p,depth+1);return;
+   for(const move of ['guard','attack','skill'])fightTurn(p,move);assert.equal(p.scene,s.fight.win);walk(p,count);return;
   }
-  const choices=visibleChoices(p);assert(choices.length>0);
-  for(const i of choices.keys()){const next=clone(p);decide(next,i);walk(next,depth+1)}
+  const choices=visibleChoices(p);assert(choices.length>0);assert.equal(choices.some(c=>c[1]==='family'),p.scene==='decision'&&!!p.flags.named);
+  for(const i of choices.keys()){
+   const next=clone(p);decide(next,i);assert(scenes[next.scene].time>s.time);assert(!p.seen.includes(next.scene));walk(next,count);
+  }
  }
- walk(fresh(),0);assert.deepEqual([...visited].sort(),Object.keys(scenes).sort());
+ walk(fresh());assert.deepEqual([...reached].sort(),Object.keys(scenes).sort());
+ const min=Math.min(...lengths),max=Math.max(...lengths);t.diagnostic(`Words on a completed path (excluding journal, labels, conditional prose and alternate branches): ${min}–${max}`);
+ assert(min>=9000);assert(max<=14000);
+});
+
+test('New edition resumes its current leaf without importing unrelated old plots',()=>{
+ const p=fresh();decide(p,0);decide(p,1);p.position=420;
+ assert.deepEqual(restore(clone(p)),p);assert.equal(restore({version:2,scene:'offer',path:'vampire',log:[]}),null);
 });
